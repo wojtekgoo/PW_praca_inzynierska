@@ -23,7 +23,7 @@ Plik konfiguracyjny kotwic (uwb_anchors.json):
   Współrzędne mierzone GNSS przy instalacji i zapisywane jednorazowo.
 
 Publiczny interfejs klasy:
-  uwb = UWBLocator(port="/dev/ttyACM0", anchors_file="uwb_anchors.json")
+  uwb = UWBLocator(port="/dev/ttyACM1", anchors_file="uwb_anchors.json")
   uwb.start()                        # otwiera port, uruchamia wątek w tle
   pos = uwb.get_position()           # zwraca obiekty typu Position lub None
   uwb.stop()
@@ -193,7 +193,7 @@ class UWBLocator:
     wykonuje trilaterację i udostępnia get_position().
 
     Użycie:
-        uwb = UWBLocator(port="/dev/ttyACM0", anchors_file="uwb_anchors.json")
+        uwb = UWBLocator(port="/dev/ttyACM1", anchors_file="uwb_anchors.json")
         uwb.start()
         ...
         pos = uwb.get_position()   # Position lub None
@@ -201,7 +201,7 @@ class UWBLocator:
         uwb.stop()
     """
 
-    def __init__(self, port: str = "/dev/ttyACM0", anchors_file: str = "uwb_anchors.json"):
+    def __init__(self, port: str = "/dev/ttyACM1", anchors_file: str = "uwb_anchors.json"):
         self._port         = port                    # ścieżka portu szeregowego
         self._anchors_file = Path(anchors_file)      # ścieżka do pliku JSON z kotwicami
 
@@ -372,8 +372,8 @@ if __name__ == "__main__":
     # --live: tryb produkcyjny — odczyt z prawdziwego portu szeregowego
     parser.add_argument("--live", action="store_true",
                         help="Run live: read from serial and print positions")
-    parser.add_argument("--port", default="/dev/ttyACM0",
-                        help="Serial port (default: /dev/ttyACM0)")
+    parser.add_argument("--port", default="/dev/ttyACM1",
+                        help="Serial port (default: /dev/ttyACM1)")
     parser.add_argument("--anchors", default="uwb_anchors.json",
                         help="Anchor config file (default: uwb_anchors.json)")
     args = parser.parse_args()

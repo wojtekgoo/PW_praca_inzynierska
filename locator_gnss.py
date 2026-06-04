@@ -51,13 +51,14 @@ def color_state(text: str, state: str, use_color: bool) -> str:
 
 def print_dashboard_line(line: str, one_line: bool):
     """
-    Jeśli one_line=True: nadpisuje bieżącą linię w terminalu.
-    W przeciwnym razie: zwykły wydruk z nową linią.
+    Jeśli one_line=True i stdout jest terminalem: nadpisuje bieżącą linię.
+    Gdy stdout jest potokiem (subprocess): zwykły print z \n, żeby czytnik
+    po drugiej stronie dostał kompletną linię od razu.
     """
-    if one_line:
+    if one_line and sys.stdout.isatty():
         print("\r" + line + ANSI_CLEAR_TO_EOL, end="", flush=True)
     else:
-        print(line)
+        print(line, flush=True)
 
 
 def find_ublox_port():
@@ -610,13 +611,6 @@ def decide_gnss_switch(latest, prev, cfg):
         prev["spf_bad"] = 0
 
     # ---- Klasyfikacja sygnałów ----
-    # gdy licznik wykrytego spoofingu przekroczył wartość progową
-    # zaraportuj spoofing
-    if prev["spf_bad"] >= cfg["SPF_BAD_N"]:
-        prev["good"] = 0
-        reason = f"spfState={spoofingState} " + " ".join(phys_reasons)
-        return "SPOOFED", reason.strip()
-    
     # gdy licznik wykrytego jammingu przekroczył wartość progową
     # zaraportuj jamming
     if prev["jam_bad"] >= cfg["JAM_N"]:
@@ -624,6 +618,13 @@ def decide_gnss_switch(latest, prev, cfg):
         reason = f"jamState={jammingState} jamInd={jamInd} hAcc={hAcc} numSV={numSV}"
         return "JAMMED", reason
 
+    # gdy licznik wykrytego spoofingu przekroczył wartość progową
+    # zaraportuj spoofing
+    if prev["spf_bad"] >= cfg["SPF_BAD_N"]:
+        prev["good"] = 0
+        reason = f"spfState={spoofingState} " + " ".join(phys_reasons)
+        return "SPOOFED", reason.strip()
+    
     # gdy licznik podejrzeń spoofingu przekroczył wartość progową
     # zaraportuj podejrzenie spoofingu
     if prev["spf_suspected"] >= cfg["spf_suspected_N"]:
@@ -691,7 +692,7 @@ def extract_mon_hw(d):
 
 def main():
     ap = argparse.ArgumentParser(description="GNSS monitor + jamming/spoofing switch (on-foot).")
-    ap.add_argument("-p", "--port", default="/dev/ttyACM1", help="Serial port (default: /dev/ttyACM1)")
+    ap.add_argument("-p", "--port", default="/dev/ttyACM0", help="Serial port (default: /dev/ttyACM0)")
     ap.add_argument("-b", "--baud", type=int, default=38400, help="Baud rate (default: 38400)")
     ap.add_argument("-n", "--num", type=int, default=0, help="Stop after N NAV-PVT epochs (0 = run forever)")
 
