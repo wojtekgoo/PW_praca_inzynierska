@@ -246,7 +246,18 @@ class CellLocator:
                 source=f"cell|{freq_str}",   # np. "cell|2600MHz"
             )
 
-        return self._position   # ta sama wieża — pozycja się nie zmieniła
+        # Ta sama wieża — odświeżamy timestamp, żeby filtr Kalmana traktował
+        # pomiar jako bieżący. Bez tego po 15 s (STALE_AFTER_S) get_position()
+        # zwracałby None, a filtr widziałby Cell ID tylko raz, w momencie handoffu.
+        if self._position is not None:
+            return Position(
+                lat=self._position.lat,
+                lon=self._position.lon,
+                accuracy=self._position.accuracy,
+                source=self._position.source,
+                timestamp=time.time(),
+            )
+        return self._position   # jeszcze nie było żadnego handoffu — None
 
     def _print_dashboard(self, pos: Optional[Position]) -> None:
         if pos is None:

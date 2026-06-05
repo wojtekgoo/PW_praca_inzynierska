@@ -274,11 +274,45 @@ def parse_position_kalman():
         except (ValueError, IndexError):
             pass
 
+def parse_cell_tower():
+    """Wyciąga (lat, lon, freq_str, freq_mhz) z najnowszej linii [CELL].
+    freq_mhz to liczbowa wartość pasma w MHz (None jeśli nieznane, np. 'bandN').
+    Zwraca (None, None, '', None) jeśli Cell ID nie ma fixu lub linia jest niepoprawna."""
+    if not output6:
+        return None, None, "", None
+    line = output6[-1]
+    if "Brak" in line or "lat=" not in line:
+        return None, None, "", None
+    lat = lon = None
+    freq = ""
+    for p in line.split():
+        if p.startswith("lat="):
+            try:    lat = float(p.split("=")[1])
+            except ValueError: pass
+        elif p.startswith("lon="):
+            try:    lon = float(p.split("=")[1])
+            except ValueError: pass
+        elif p.startswith("pasmo="):
+            freq = p.split("=")[1]
+    freq_mhz = None
+    if freq.endswith("MHz"):
+        try:
+            freq_mhz = int(freq[:-3])
+        except ValueError:
+            pass
+    return lat, lon, freq, freq_mhz
+
 def deg2tile_float(lat, lon, zoom):
     n = 2 ** zoom
     x = (lon + 180) / 360 * n
     y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * n
     return x, y
+
+def meters_to_pixels(meters, lat, zoom):
+    """Web-Mercator: rozdzielczość maleje z szerokością geograficzną.
+    Na równiku przy zoomie z: ~156543.03 / 2^z m/piksel."""
+    meters_per_pixel = 156543.03 * math.cos(math.radians(lat)) / (2 ** zoom)
+    return int(meters / meters_per_pixel)
 
 tile_cache = {}
 
@@ -435,31 +469,92 @@ try:
         elif current_view == VIEW_MAP:
             parse_position_kalman()
 
-            if current_lat[0] and current_lon[0]:
-                map_rect = pygame.Rect(0, 40, 800, 440)
+            # Wyciągnij etykietę źródła i heading z ostatniej linii [KALMAN]
+            src_str = ""
+            hdg_str = ""
+            if output5:
+                parts = output5[-1].split()
+                if len(parts) >= 2:
+                    src_str = parts[1]
+                for part in parts:
+                    if part.startswith("hdg="):
+                        try:
+                            hdg_val = float(part[4:].replace("deg","").replace("°","").strip())
+                            dirs = ["N","NE","E","SE","S","SW","W","NW"]
+                            hdg_str = f"  {hdg_val:.1f}° {dirs[int((hdg_val+22.5)/45)%8]}"
+                        except ValueError:
+                            pass
+
+            # Tryb awaryjny: tylko Cell ID (+IMU), brak źródeł precyzyjnych
+            src_lower = src_str.lower()
+            cell_only_mode = (
+                "cell" in src_lower
+                and "uwb"  not in src_lower
+                and "gnss" not in src_lower
+                and "wifi" not in src_lower
+            )
+
+            map_rect = pygame.Rect(0, 40, 800, 440)
+
+            if cell_only_mode:
+                cell_lat, cell_lon, cell_freq, cell_freq_mhz = parse_cell_tower()
+            else:
+                cell_lat = cell_lon = None
+                cell_freq = ""
+                cell_freq_mhz = None
+
+            if cell_only_mode and cell_lat is not None:
+                # ── Widok masztu: niższy zoom, bo zasięg komórki to km ──────
+                TOWER_ZOOM = 13
+                screen.set_clip(map_rect)
+                draw_map(screen, cell_lat, cell_lon, TOWER_ZOOM, map_rect)
+                screen.set_clip(None)
+
+                cx = map_rect.x + map_rect.width  // 2
+                cy = map_rect.y + map_rect.height // 2
+
+                # Okrąg zasięgu (promień 3000 m) tylko dla pasm > 1 GHz.
+                # Niskie pasma (700-900 MHz) mają komórki rzędu 10 km — okrąg
+                # wyjeżdżałby poza mapę, więc dla nich pokazujemy sam maszt.
+                if cell_freq_mhz is not None and cell_freq_mhz > 1000:
+                    radius_px = meters_to_pixels(3000, cell_lat, TOWER_ZOOM)
+                    # Półprzezroczyste wypełnienie + wyraźny obrys
+                    circle_surf = pygame.Surface(
+                        (radius_px * 2 + 4, radius_px * 2 + 4), pygame.SRCALPHA)
+                    pygame.draw.circle(circle_surf, (255, 200, 0, 50),
+                                       (radius_px + 2, radius_px + 2), radius_px)
+                    pygame.draw.circle(circle_surf, (255, 200, 0, 220),
+                                       (radius_px + 2, radius_px + 2), radius_px, 2)
+                    screen.set_clip(map_rect)
+                    screen.blit(circle_surf,
+                                (cx - radius_px - 2, cy - radius_px - 2))
+                    screen.set_clip(None)
+
+                # Zamaż zwykły marker (czerwoną kropkę) narysowaną w draw_map,
+                # podmieniając ją w środku mapy na ikonkę masztu
+                pygame.draw.rect(screen, (40, 40, 40),
+                                 (cx - 14, cy - 18, 28, 36))
+                # Trójkątna antena z pionową linią
+                pygame.draw.polygon(screen, (255, 200, 0),
+                                    [(cx - 12, cy + 14),
+                                     (cx + 12, cy + 14),
+                                     (cx,      cy - 16)])
+                pygame.draw.line(screen, (0, 0, 0),
+                                 (cx, cy - 16), (cx, cy + 14), 2)
+
+                header = (f"[CELL] TRYB AWARYJNY  {cell_freq}  "
+                          f"Maszt: {cell_lat:.6f}, {cell_lon:.6f}")
+                screen.blit(font.render(header, True, (255, 200, 0)), (10, 10))
+
+            elif current_lat[0] and current_lon[0]:
+                # ── Widok normalny: pozycja z filtra Kalmana ────────────────
                 screen.set_clip(map_rect)
                 draw_map(screen, current_lat[0], current_lon[0], ZOOM, map_rect)
                 screen.set_clip(None)
 
-                # Parse source and heading from latest [KALMAN] line
-                src_str = ""
-                hdg_str = ""
-                if output5:
-                    for part in output5[-1].split():
-                        if part.startswith("hdg="):
-                            try:
-                                hdg_val = float(part[4:].replace("deg","").replace("°","").strip())
-                                dirs = ["N","NE","E","SE","S","SW","W","NW"]
-                                hdg_str = f"  {hdg_val:.1f}° {dirs[int((hdg_val+22.5)/45)%8]}"
-                            except ValueError:
-                                pass
-                    # source is the token right after [KALMAN]
-                    parts = output5[-1].split()
-                    if len(parts) >= 2:
-                        src_str = parts[1]
-
                 coord_txt = font.render(
-                    f"[KALMAN] {src_str}  Lat: {current_lat[0]:.7f}  Lon: {current_lon[0]:.7f}{hdg_str}",
+                    f"[KALMAN] {src_str}  Lat: {current_lat[0]:.7f}  "
+                    f"Lon: {current_lon[0]:.7f}{hdg_str}",
                     True, (255, 255, 255)
                 )
                 screen.blit(coord_txt, (10, 10))
