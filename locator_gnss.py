@@ -8,6 +8,7 @@ Lokalizator GNSS z wykrywaniem jammingu/spoofingu (profil pieszy)
 """
 
 import argparse
+import os
 import math
 import sys
 import time
@@ -786,6 +787,9 @@ def main():
 
     try:
         while True:
+            if os.path.exists("/tmp/gnss.off"):   # wyłączenie źródła (testy skrajne)
+                time.sleep(1.0)
+                continue
             _, msg = ubr.read()
             if msg is None:
                 continue
@@ -976,6 +980,11 @@ class GNSSLocator:
                 use_color = sys.stdout.isatty()
 
                 while self._running:
+                    if os.path.exists("/tmp/gnss.off"):   # wyłączenie źródła (testy skrajne)
+                        with self._lock:
+                            self._position = None
+                        time.sleep(1.0)
+                        continue
                     _, msg = ubr.read()
                     if msg is None:
                         continue

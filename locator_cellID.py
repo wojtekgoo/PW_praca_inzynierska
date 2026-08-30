@@ -16,6 +16,7 @@ Pozycje wież pobierane są z:
   2. OpenCelliD API   — globalny fallback
 """
 
+import os
 import re
 import time
 import serial
@@ -29,6 +30,7 @@ from position import Position
 logger = logging.getLogger(__name__)
 
 SERIAL_PORT        = "/dev/ttyUSB3"
+DISABLE_FLAG       = "/tmp/cell.off"   # obecność pliku wyłącza źródło (testy skrajne)
 BAUD_RATE          = 115200
 BTSEARCH_API_KEY   = ""
 OPENCELLID_API_KEY = ""
@@ -212,6 +214,17 @@ class CellLocator:
                 with serial.Serial(self._port, BAUD_RATE, timeout=3) as ser:
                     logger.info(f"CellLocator: uruchomiony na {self._port}")
                     while self._running:
+                        if os.path.exists(DISABLE_FLAG):
+                            with self._lock:
+                                self._position = None
+                            # WAŻNE: zerujemy też _last_cell_id. Bez tego po ponownym
+                            # włączeniu bieżąca wieża byłaby uznana za "tę samą"
+                            # (brak handoffu), lookup by się nie wykonał, a _position
+                            # pozostałoby None — Cell ID nigdy by nie wstał.
+                            self._last_cell_id = None
+                            self._print_dashboard(None)
+                            time.sleep(POLL_INTERVAL)
+                            continue
                         pos = self._update(ser)
                         with self._lock:
                             self._position = pos

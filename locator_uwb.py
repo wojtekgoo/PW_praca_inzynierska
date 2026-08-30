@@ -298,6 +298,12 @@ class UWBLocator:
                 with serial.Serial(self._port, SERIAL_BAUD, timeout=READ_TIMEOUT_S) as ser:
                     logger.info(f"[UWB] serial port {self._port} opened")
                     while self._running:
+                        if os.path.exists("/tmp/uwb.off"):   # wyłączenie źródła (testy skrajne)
+                            with self._lock:
+                                self._position = None
+                            print("[UWB]  Wyłączone (flaga /tmp/uwb.off)", flush=True)
+                            time.sleep(1.0)
+                            continue
                         raw = ser.readline()    # czekaj na pełną linię (do '\n' lub timeout)
                         if not raw:
                             continue            # timeout bez danych — pętl dalej

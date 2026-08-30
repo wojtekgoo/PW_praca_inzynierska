@@ -176,12 +176,47 @@ def apply_cal(reading: IMUReading, cal: dict) -> IMUReading:
         gz=reading.gz - g["bias_z"],
         # https://atadiat.com/en/e-magnetometer-soft-iron-and-hard-iron-calibration-why-how/
         # kokretne wartości zostały znalezione przez kalibrację urządzenia
-        # przeprowadzonej w skrypcie imu_calibration.py
-        mx=(reading.mx - m["hard_iron_x"]) * m["soft_iron_scale_x"],
-        my=(reading.my - m["hard_iron_y"]) * m["soft_iron_scale_y"],
-        mz=(reading.mz - m["hard_iron_z"]) * m["soft_iron_scale_z"],
+        # przeprowadzonej w skrypcie mag_calibrate.py
+        **_mag_calibrated(reading, m),
         timestamp=reading.timestamp,
     )
+
+
+def _mag_calibrated(reading: IMUReading, m: dict) -> dict:
+    """
+    Korekta magnetometru: hard iron (przesunięcie) + soft iron (deformacja).
+
+    Jeśli calibration.json zawiera pełną macierz 3x3 ("soft_iron_matrix"),
+    używamy jej — soft iron bywa nieosiowo-zgodny (elipsoida obrócona względem
+    osi czujnika) i model diagonalny wtedy nie wystarcza.
+    W przeciwnym razie: model diagonalny (wsteczna zgodność).
+    """
+    cx = reading.mx - m["hard_iron_x"]
+    cy = reading.my - m["hard_iron_y"]
+    cz = reading.mz - m["hard_iron_z"]
+
+    M = m.get("soft_iron_matrix")
+    if M:
+        kx = M[0][0] * cx + M[0][1] * cy + M[0][2] * cz
+        ky = M[1][0] * cx + M[1][1] * cy + M[1][2] * cz
+        kz = M[2][0] * cx + M[2][1] * cy + M[2][2] * cz
+    else:
+        kx = cx * m["soft_iron_scale_x"]
+        ky = cy * m["soft_iron_scale_y"]
+        kz = cz * m["soft_iron_scale_z"]
+
+    # ── Zgodność układu osi MMC5983MA z ISM330DHCX ───────────────────────────
+    # Magnetometr i akcelerometr/żyroskop to osobne układy na płytce, o różnie
+    # zorientowanych osiach. Bez wyrównania filtr Madgwicka fuzjuje czujniki
+    # w niezgodnych układach i heading jest przekręcony (obserwowano SE zamiast NE).
+    #
+    # Mapowanie wyznaczone empirycznie (mag_check.py --cardinal): wariant B = (mx, -my).
+    # Średni błąd 7,0° — pozostałe warianty: 84-168°.
+    # Oś Z pozostaje BEZ ZMIAN (test kardynalny tego nie wymagał).
+    #
+    # Kolejność ma znaczenie: zamiana osi NASTĘPUJE PO korekcie hard/soft iron,
+    # ponieważ kalibracja została wyznaczona na surowych osiach czujnika.
+    return {"mx": kx, "my": -ky, "mz": kz}
 
 def init_mag(bus: smbus2.SMBus) -> bool:
     """
@@ -238,6 +273,10 @@ def read_mag_raw(bus: smbus2.SMBus) -> Optional[tuple]:
     my -= MMC_NULL_FIELD
     mz -= MMC_NULL_FIELD
 
+    # UWAGA: zwracamy SUROWE osie czujnika. Kalibracja (hard/soft iron) została
+    # wyznaczona na surowych odczytach (mag_calibrate.py), więc musi być
+    # zastosowana PRZED zamianą osi. Wyrównanie układu osi magnetometru
+    # do ISM330DHCX następuje w apply_cal(), już po korekcie kalibracyjnej.
     return mx, my, mz
 
 def compute_heading(mx: float, my: float, mz: float,
@@ -466,5 +505,5 @@ if __name__ == "__main__":
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\Zatrzymuję...")
+        print("\nZatrzymuję...")
         imu.stop()

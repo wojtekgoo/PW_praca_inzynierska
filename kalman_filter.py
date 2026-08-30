@@ -88,6 +88,9 @@ from locator_wifi import WiFiLocator       # lokator Wi-Fi (fingerprinting/trila
 from locator_cellID import CellLocator     # lokator Cell ID (stacje bazowe GSM/LTE)
 from locator_imu  import IMULocator        # lokator IMU (akcelerometr + żyroskop + magnetometr)
 
+import os
+from source_control import is_disabled     # wyłączanie źródeł flagą (testy skrajne)
+
 # Filtr AHRS Madgwicka — estymuje orientację 3D urządzenia jako kwaternion,
 # fuzjując dane z akcelerometru, żyroskopu i magnetometru.
 # Kwaternion jest używany do:
@@ -104,6 +107,9 @@ GRAVITY = 9.81   # przyspieszenie grawitacyjne w m/s²
 
 # ── Konfiguracja ─────────────────────────────────────────────────────────────
 
+GATE_THRESHOLD = 11.8          # x^2 dla 2 st. swobody, ~99,7% - odrzuc tylko skrajne pomiary
+MAX_CONSECUTIVE_REJECTS = 5    # zabezpieczenie przed zablokowaniem po dywergencji
+
 # Ile próbek IMU podać filtrowi Madgwicka na starcie, aby kwaternion
 # skonwergował do poprawnej orientacji. Przy ~100 Hz, 300 próbek ≈ 3 s.
 # W tym czasie urządzenie powinno być w miarę nieruchome.
@@ -113,7 +119,7 @@ AHRS_WARMUP_SAMPLES = 300
 # ruchu (predykcji z IMU) w porównaniu do pomiarów z lokatorów.
 #   Wyższe wartości → filtr szybciej reaguje na zmiany pozycji (mniej wygładzania)
 #   Niższe wartości  → filtr bardziej wygładza trajektorię (większa inercja)
-Q_POS = 0.01   # m² na sekundę  — szum procesowy pozycji (x, y)
+Q_POS = 1.00   # m² na sekundę  — szum procesowy pozycji (x, y)
 Q_VEL = 0.10   # (m/s)² na sekundę — szum procesowy prędkości (vx, vy)
 
 # Maksymalny wiek pomiaru (w sekundach), powyżej którego odczyt jest odrzucany.
@@ -271,6 +277,8 @@ class KalmanFilter:
                  gnss_port:  str = "/dev/ttyACM1",
                  gnss_script: str = "/home/wojtek/locator_gnss.py",
                  cell_port:  str = "/dev/ttyUSB3"):
+
+        self._reject_count = 0
 
         # Wczytanie centroidu kotwic UWB — punkt odniesienia układu ENU
         self._origin_lat, self._origin_lon = load_anchor_centroid(anchors_file)
@@ -477,8 +485,9 @@ class KalmanFilter:
                 x_m, y_m = latlon_to_xy(pos.lat, pos.lon,
                                         self._origin_lat, self._origin_lon)
                 # Krok korekcji — aktualizuj stan na podstawie pomiaru
-                self.update_step(x_m, y_m, pos.accuracy)
-                sources_used.append(name)
+                if self.update_step(x_m, y_m, pos.accuracy):
+                    sources_used.append(name)
+                
                 self.last_pos_used[name] = pos.timestamp
 
             # ── Publikacja wyniku ─────────────────────────────────────────────
@@ -531,6 +540,10 @@ class KalmanFilter:
 
             with self._lock:
                 self._result = result
+
+            if os.environ.get("KALMAN_TEST_LOG"):   # logowanie tylko podczas testów
+                from test_logger import log_position
+                log_position(result)
 
             time.sleep(sleep_dt)
 
@@ -719,7 +732,7 @@ class KalmanFilter:
 
     # ── Krok korekcji pozycji (measurement update) ────────────────────────────
 
-    def update_step(self, x_m: float, y_m: float, accuracy: float) -> None:
+    def update_step(self, x_m: float, y_m: float, accuracy: float) -> bool:
         """
         is corrected when a new measurement arrives from UWB, GNSS, WiFi, or Cell, shifting the values toward the observed position.
         Korekcja stanu na podstawie pomiaru pozycji (x_m, y_m) w metrach ENU.
@@ -772,7 +785,17 @@ class KalmanFilter:
         # Macierz kowariancji innowacji
         S = H @ self._P @ H.T + R
         
-        # Kalman Gain
+        # ── Bramkowanie innowacji (odrzucanie pomiarów odstających) ──
+        d2 = float(y @ np.linalg.solve(S, y))      # kwadrat odległości Mahalanobisa
+        if d2 > GATE_THRESHOLD:
+            self._reject_count += 1
+            if self._reject_count < MAX_CONSECUTIVE_REJECTS:
+                logger.warning(f"Pomiar odstający odrzucony: d²={d2:.1f} (acc={accuracy:.0f}m)")
+                return False                        # pomiń korekcję — nie zmieniaj x ani P
+            # zbyt wiele odrzuceń z rzędu → filtr prawdopodobnie zdywergował, przyjmij pomiar
+            logger.warning("Reset bramki po serii odrzuceń — przyjmuję pomiar")
+        self._reject_count = 0
+        
         # Wzmocnienie Kalmana — określa, jak bardzo pomiar zmieni stan
         # Duże K = filtr mocno koryguje (duże zaufanie do pomiaru)
         # Małe K = filtr mało koryguje (duże zaufanie do predykcji)
@@ -784,6 +807,7 @@ class KalmanFilter:
 
         # Korekcja macierzy kowariancji — niepewność maleje po korekcji
         self._P = (np.eye(4) - K @ H) @ self._P
+        return True                                 # pomiar przyjęty (przeszedł bramkę)
 
     # ── ZUPT (Zero Velocity Update) ──────────────────────────────────────────
 
@@ -846,8 +870,13 @@ class KalmanFilter:
             ("cell", self._cell.get_position()),
         ]
         for name, pos in candidates:
+            if is_disabled(name):
+                continue   # źródło wyłączone flagą /tmp/<name>.off (test skrajny)
             if pos is None:
                 continue   # lokator nie ma pomiaru — pomiń
+            if os.environ.get("KALMAN_TEST_LOG"):   # surowa pozycja źródła (przed fuzją)
+                from test_logger import log_raw
+                log_raw(name, pos)
             last_used = self.last_pos_used.get(name, 0.0)
             pos_ts = pos.timestamp if isinstance(pos.timestamp, float) \
                      else pos.timestamp.timestamp()
@@ -865,6 +894,10 @@ class KalmanFilter:
 
 if __name__ == "__main__":
     import signal
+
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s  [%(levelname)s]  %(message)s",
+                        datefmt="%H:%M:%S")
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s  [%(levelname)s]  %(message)s",

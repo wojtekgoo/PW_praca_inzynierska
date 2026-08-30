@@ -380,6 +380,37 @@ COLOR_KALMAN = (255,   0, 255)
 COLOR_IMU    = (  0, 200, 255)
 COLOR_DIM    = (100, 100, 100)
 COLOR_DIV    = (100, 100, 100)
+
+# ── Ujednolicony rendering paneli źródeł ─────────────────────────────────────
+# Jedna reguła dla GNSS / WiFi / UWB / Cell ID:
+#   • jest realny fix  → linia pozycji w kolorze źródła
+#   • brak fixu (wygasłe, wyłączone flagą, lub linia "Brak"/"Wyłączone")
+#                      → spójny tekst "[XXX]  Brak dostępnej pozycji"
+SOURCE_COLORS = {
+    "gnss": COLOR_GNSS, "wifi": COLOR_WIFI,
+    "uwb":  COLOR_UWB,  "cell": COLOR_CELL,
+}
+
+# True  = "Brak" na szaro (spójnie, zalecane) | False = "Brak" w kolorze źródła
+DIM_WHEN_UNAVAILABLE = True
+
+def _has_fix(key, output):
+    """Źródło ma realny fix: jest świeże i ostatnia linia to pozycja, nie 'Brak'/'Wyłączone'."""
+    if not (output and _fresh(key)):
+        return False
+    last = output[-1]
+    return ("Brak" not in last) and ("Wyłączone" not in last) and ("nieaktywne" not in last)
+
+def render_source_panel(screen, font, key, label, output, y):
+    """Rysuje panel jednego źródła w ujednoliconym stylu. Zwraca True, jeśli jest fix."""
+    live = _has_fix(key, output)
+    if live:
+        text, color = output[-1], SOURCE_COLORS[key]
+    else:
+        text  = f"[{label}]  Brak dostępnej pozycji"
+        color = COLOR_DIM if DIM_WHEN_UNAVAILABLE else SOURCE_COLORS[key]
+    screen.blit(font.render(text, True, color), (10, y))
+    return live
 IMU_HEADER   = "Accel-X    Accel-Y    Accel-Z      Gyro-X     Gyro-Y     Gyro-Z"
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -398,28 +429,17 @@ try:
 
         if current_view == VIEW_DASHBOARD:
 
-            # Panel 1 — GNSS (green)                              y=10
-            gnss_ok = output1 and _fresh("gnss")
-            line = output1[-1] if gnss_ok else "Brak GNSS..."
-            screen.blit(font.render(line, True, COLOR_GNSS if gnss_ok else COLOR_DIM), (10, 10))
+            # Panele źródeł — ujednolicony rendering (kolor = jest fix, szary = brak)
+            render_source_panel(screen, font, "gnss", "GNSS", output1, 10)
             pygame.draw.line(screen, COLOR_DIV, (0, 35), (800, 35), 1)
 
-            # Panel 2 — WiFi (yellow) — jedna linia               y=45
-            wifi_ok = output2 and _fresh("wifi")
-            line = output2[-1] if wifi_ok else "Brak WiFi..."
-            screen.blit(font.render(line, True, COLOR_WIFI if wifi_ok else COLOR_DIM), (10, 45))
+            render_source_panel(screen, font, "wifi", "WIFI", output2, 45)
             pygame.draw.line(screen, COLOR_DIV, (0, 68), (800, 68), 1)
 
-            # Panel 3 — UWB (orange)                              y=78
-            uwb_ok = output3 and _fresh("uwb")
-            line = output3[-1] if uwb_ok else "Brak UWB..."
-            screen.blit(font.render(line, True, COLOR_UWB if uwb_ok else COLOR_DIM), (10, 78))
+            render_source_panel(screen, font, "uwb", "UWB", output3, 78)
             pygame.draw.line(screen, COLOR_DIV, (0, 100), (800, 100), 1)
 
-            # Panel 6 — Cell ID pozycja (czerwony)                y=110
-            cell_ok = output6 and _fresh("cell")
-            line = output6[-1] if cell_ok else "Brak Cell ID..."
-            screen.blit(font.render(line, True, COLOR_CELL if cell_ok else COLOR_DIM), (10, 110))
+            cell_ok = render_source_panel(screen, font, "cell", "CELL", output6, 110)
 
             # Panel 7 — Cell ID opis lokalizacji (bez prefiksu, przesuwny) y=132
             raw_addr = output7[-1] if (cell_ok and output7) else ""
